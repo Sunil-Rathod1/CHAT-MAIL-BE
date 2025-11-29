@@ -160,6 +160,72 @@ module.exports = (io) => {
       }
     });
 
+    // Handle message reactions
+    socket.on('message:react', async (data) => {
+      try {
+        const { messageId, emoji } = data;
+
+        // Find the message
+        const message = await Message.findById(messageId);
+        if (!message) {
+          socket.emit('reaction:error', { message: 'Message not found' });
+          return;
+        }
+
+        // Check if user already reacted with this emoji
+        const existingReaction = message.reactions.find(
+          r => r.userId.toString() === socket.userId && r.emoji === emoji
+        );
+
+        if (existingReaction) {
+          // Remove reaction (toggle off)
+          message.reactions = message.reactions.filter(
+            r => !(r.userId.toString() === socket.userId && r.emoji === emoji)
+          );
+        } else {
+          // Remove any other reaction from this user (only one reaction per user)
+          message.reactions = message.reactions.filter(
+            r => r.userId.toString() !== socket.userId
+          );
+          // Add new reaction
+          message.reactions.push({
+            userId: socket.userId,
+            emoji,
+            createdAt: Date.now()
+          });
+        }
+
+        await message.save();
+        await message.populate('reactions.userId', 'name avatar');
+
+        // Broadcast reaction update to both sender and receiver
+        const senderId = message.sender.toString();
+        const receiverId = message.receiver.toString();
+
+        const reactionData = {
+          messageId,
+          reactions: message.reactions,
+          updatedBy: socket.userId
+        };
+
+        // Send to sender
+        const senderSocketId = onlineUsers.get(senderId);
+        if (senderSocketId) {
+          io.to(senderSocketId).emit('message:reaction', reactionData);
+        }
+
+        // Send to receiver
+        const receiverSocketId = onlineUsers.get(receiverId);
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit('message:reaction', reactionData);
+        }
+
+      } catch (error) {
+        console.error('Error handling reaction:', error);
+        socket.emit('reaction:error', { message: error.message });
+      }
+    });
+
     // Handle user disconnect
     socket.on('disconnect', () => {
       console.log(`❌ User disconnected: ${socket.userEmail}`);
