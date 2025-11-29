@@ -8,18 +8,27 @@ const messageSchema = new mongoose.Schema({
   },
   receiver: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    ref: 'User'
+  },
+  // Group chat support
+  conversationType: {
+    type: String,
+    enum: ['direct', 'group'],
+    default: 'direct'
+  },
+  groupId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Group'
   },
   content: {
     type: String,
     required: function() {
-      return this.type === 'text';
+      return this.type === 'text' && !this.isDeleted;
     }
   },
   type: {
     type: String,
-    enum: ['text', 'image', 'file'],
+    enum: ['text', 'image', 'file', 'voice'],
     default: 'text'
   },
   fileUrl: {
@@ -31,6 +40,62 @@ const messageSchema = new mongoose.Schema({
   fileSize: {
     type: Number
   },
+  mimeType: {
+    type: String
+  },
+  // Image specific
+  thumbnail: {
+    type: String
+  },
+  // Message reply
+  replyTo: {
+    messageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Message'
+    },
+    content: String,
+    sender: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }
+  },
+  // Message editing
+  isEdited: {
+    type: Boolean,
+    default: false
+  },
+  editedAt: {
+    type: Date
+  },
+  editHistory: [{
+    content: String,
+    editedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  // Message deletion
+  isDeleted: {
+    type: Boolean,
+    default: false
+  },
+  deletedBy: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    deletedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  deletedForEveryone: {
+    type: Boolean,
+    default: false
+  },
+  deletedAt: {
+    type: Date
+  },
   status: {
     type: String,
     enum: ['sent', 'delivered', 'read'],
@@ -39,6 +104,16 @@ const messageSchema = new mongoose.Schema({
   readAt: {
     type: Date
   },
+  readBy: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    readAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   reactions: [{
     userId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -4,7 +4,7 @@ const User = require('../models/User');
 // Send a message (via HTTP - backup)
 exports.sendMessage = async (req, res) => {
   try {
-    const { receiverId, content, type } = req.body;
+    const { receiverId, content, type, replyTo } = req.body;
     
     const receiver = await User.findById(receiverId);
     if (!receiver) {
@@ -18,11 +18,16 @@ exports.sendMessage = async (req, res) => {
       sender: req.user._id,
       receiver: receiverId,
       content,
-      type: type || 'text'
+      type: type || 'text',
+      conversationType: 'direct',
+      replyTo
     });
 
     await message.populate('sender', 'name email avatar');
     await message.populate('receiver', 'name email avatar');
+    if (replyTo?.messageId) {
+      await message.populate('replyTo.sender', 'name email avatar');
+    }
 
     res.status(201).json({
       success: true,
@@ -44,20 +49,21 @@ exports.getChatHistory = async (req, res) => {
 
     const messages = await Message.find({
       $or: [
-        { sender: req.user._id, receiver: userId },
-        { sender: userId, receiver: req.user._id }
+        { sender: req.user._id, receiver: userId, conversationType: 'direct' },
+        { sender: userId, receiver: req.user._id, conversationType: 'direct' }
       ]
     })
     .populate('sender', 'name email avatar')
     .populate('receiver', 'name email avatar')
+    .populate('replyTo.sender', 'name email avatar')
     .sort({ createdAt: -1 })
     .limit(limit * 1)
     .skip((page - 1) * limit);
 
     const totalMessages = await Message.countDocuments({
       $or: [
-        { sender: req.user._id, receiver: userId },
-        { sender: userId, receiver: req.user._id }
+        { sender: req.user._id, receiver: userId, conversationType: 'direct' },
+        { sender: userId, receiver: req.user._id, conversationType: 'direct' }
       ]
     });
 
@@ -88,13 +94,14 @@ exports.getConversations = async (req, res) => {
     // First, find all unique users the current user has chatted with
     const messages = await Message.find({
       $or: [
-        { sender: req.user._id },
-        { receiver: req.user._id }
+        { sender: req.user._id, conversationType: 'direct' },
+        { receiver: req.user._id, conversationType: 'direct' }
       ]
     })
     .sort({ createdAt: -1 })
     .populate('sender', 'name email avatar status')
     .populate('receiver', 'name email avatar status')
+    .populate('replyTo.sender', 'name email avatar')
     .limit(100);
 
     console.log('Found messages:', messages.length);
@@ -155,6 +162,31 @@ exports.markAsRead = async (req, res) => {
     res.json({
       success: true,
       message: 'Messages marked as read'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Upload image
+exports.uploadImage = async (req, res) => {
+  try {
+    // Image processing is done by middleware
+    // req.uploadedImage contains the URLs and metadata
+    
+    if (!req.uploadedImage) {
+      return res.status(400).json({
+        success: false,
+        message: 'Image upload failed'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: req.uploadedImage
     });
   } catch (error) {
     res.status(500).json({
