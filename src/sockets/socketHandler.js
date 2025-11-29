@@ -41,7 +41,10 @@ module.exports = (io) => {
       lastSeen: Date.now()
     }).exec();
 
-    // Broadcast user online status
+    // Send current online users list to the newly connected user
+    socket.emit('users:online', { userIds: Array.from(onlineUsers.keys()) });
+
+    // Broadcast user online status to others
     socket.broadcast.emit('user:online', { userId: socket.userId });
 
     // Join user's personal room
@@ -123,6 +126,37 @@ module.exports = (io) => {
         }
       } catch (error) {
         console.error('Error updating message status:', error);
+      }
+    });
+
+    // Handle marking all messages from a sender as read
+    socket.on('messages:read', async (data) => {
+      try {
+        const { senderId } = data;
+
+        // Update all unread messages from this sender
+        const result = await Message.updateMany(
+          { 
+            sender: senderId, 
+            receiver: socket.userId,
+            status: { $ne: 'read' }
+          },
+          { 
+            status: 'read',
+            readAt: Date.now()
+          }
+        );
+
+        // Notify sender about read status
+        const senderSocketId = onlineUsers.get(senderId);
+        if (senderSocketId && result.modifiedCount > 0) {
+          io.to(senderSocketId).emit('messages:read', {
+            receiverId: socket.userId,
+            count: result.modifiedCount
+          });
+        }
+      } catch (error) {
+        console.error('Error updating messages status:', error);
       }
     });
 
