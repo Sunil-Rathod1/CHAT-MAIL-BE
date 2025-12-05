@@ -2,9 +2,12 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Message = require('../models/Message');
 const Group = require('../models/Group');
+const Call = require('../models/Call');
 
 // Store online users: { userId: socketId }
 const onlineUsers = new Map();
+// Store active calls: { oderId: { call, participants } }
+const activeCalls = new Map();
 
 module.exports = (io) => {
   // Socket authentication middleware
@@ -17,7 +20,7 @@ module.exports = (io) => {
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.userId);
-      
+
       if (!user) {
         return next(new Error('User not found'));
       }
@@ -37,7 +40,7 @@ module.exports = (io) => {
     onlineUsers.set(socket.userId, socket.id);
 
     // Update user status to online
-    User.findByIdAndUpdate(socket.userId, { 
+    User.findByIdAndUpdate(socket.userId, {
       status: 'online',
       lastSeen: Date.now()
     }).exec();
@@ -54,24 +57,29 @@ module.exports = (io) => {
     // Handle sending messages
     socket.on('message:send', async (data) => {
       try {
-        const { receiverId, content, type = 'text' } = data;
+        const { receiverId, content, type = 'text', replyTo } = data;
 
         // Create message in database
         const message = await Message.create({
           sender: socket.userId,
           receiver: receiverId,
           content,
-          type
+          type,
+          replyTo
         });
 
         await message.populate('sender', 'name email avatar');
         await message.populate('receiver', 'name email avatar');
 
+        if (replyTo?.messageId) {
+          await message.populate('replyTo.sender', 'name email avatar');
+        }
+
         // Send to receiver if online
         const receiverSocketId = onlineUsers.get(receiverId);
         if (receiverSocketId) {
           io.to(receiverSocketId).emit('message:receive', message);
-          
+
           // Update message status to delivered
           message.status = 'delivered';
           await message.save();
@@ -137,12 +145,12 @@ module.exports = (io) => {
 
         // Update all unread messages from this sender
         const result = await Message.updateMany(
-          { 
-            sender: senderId, 
+          {
+            sender: senderId,
             receiver: socket.userId,
             status: { $ne: 'read' }
           },
-          { 
+          {
             status: 'read',
             readAt: Date.now()
           }
@@ -264,6 +272,10 @@ module.exports = (io) => {
         message.content = content;
         message.isEdited = true;
         message.editedAt = Date.now();
+        
+        // Get receiver ID BEFORE populating (while it's still an ObjectId)
+        const receiverId = message.receiver.toString();
+        
         await message.save();
 
         await message.populate('sender', 'name email avatar');
@@ -276,8 +288,7 @@ module.exports = (io) => {
           editedAt: message.editedAt
         };
 
-        // Broadcast to both users
-        const receiverId = message.receiver.toString();
+        // Broadcast to receiver
         const receiverSocketId = onlineUsers.get(receiverId);
         if (receiverSocketId) {
           io.to(receiverSocketId).emit('message:edited', editData);
@@ -317,6 +328,9 @@ module.exports = (io) => {
             return;
           }
 
+          // Get receiver ID BEFORE any changes (while it's still an ObjectId)
+          const receiverId = message.receiver.toString();
+
           message.deletedForEveryone = true;
           message.isDeleted = true;
           message.deletedAt = Date.now();
@@ -324,7 +338,6 @@ module.exports = (io) => {
           await message.save();
 
           // Broadcast to receiver
-          const receiverId = message.receiver.toString();
           const receiverSocketId = onlineUsers.get(receiverId);
           if (receiverSocketId) {
             io.to(receiverSocketId).emit('message:deleted', {
@@ -425,7 +438,7 @@ module.exports = (io) => {
     socket.on('group:join', async (data) => {
       try {
         const { groupId } = data;
-        
+
         const group = await Group.findById(groupId);
         if (!group || !group.isMember(socket.userId)) {
           return socket.emit('message:error', { message: 'Cannot join group' });
@@ -450,7 +463,7 @@ module.exports = (io) => {
     socket.on('group:leave', async (data) => {
       try {
         const { groupId } = data;
-        
+
         socket.leave(`group_${groupId}`);
 
         // Notify other members
@@ -621,10 +634,306 @@ module.exports = (io) => {
       });
     });
 
+    // ============= WEBRTC VIDEO/AUDIO CALL EVENTS =============
+
+    // Initiate a call
+    socket.on('call:initiate', async (data) => {
+      try {
+        const { receiverId, callType } = data; // callType: 'audio' or 'video'
+        
+        const receiverSocketId = onlineUsers.get(receiverId);
+        
+        // Check if receiver is online
+        if (!receiverSocketId) {
+          socket.emit('call:error', { message: 'User is offline' });
+          return;
+        }
+
+        // Check if receiver is already in a call
+        for (const [callId, callData] of activeCalls) {
+          if (callData.participants.includes(receiverId)) {
+            socket.emit('call:error', { message: 'User is busy on another call' });
+            return;
+          }
+        }
+
+        // Get caller info
+        const caller = await User.findById(socket.userId).select('name email avatar');
+
+        // Create call record
+        const call = await Call.create({
+          caller: socket.userId,
+          receiver: receiverId,
+          type: callType,
+          status: 'ringing'
+        });
+
+        // Store active call
+        activeCalls.set(call._id.toString(), {
+          call,
+          participants: [socket.userId, receiverId]
+        });
+
+        // Notify receiver of incoming call
+        io.to(receiverSocketId).emit('call:incoming', {
+          callId: call._id,
+          caller: {
+            id: socket.userId,
+            name: caller.name,
+            email: caller.email,
+            avatar: caller.avatar
+          },
+          callType
+        });
+
+        // Send call ID back to caller
+        socket.emit('call:initiated', {
+          callId: call._id,
+          receiverId
+        });
+
+        // Set timeout for missed call (30 seconds)
+        setTimeout(async () => {
+          const activeCall = activeCalls.get(call._id.toString());
+          if (activeCall && activeCall.call.status === 'ringing') {
+            // Mark as missed
+            await Call.findByIdAndUpdate(call._id, {
+              status: 'missed',
+              endReason: 'missed'
+            });
+            activeCalls.delete(call._id.toString());
+
+            // Notify both parties
+            socket.emit('call:missed', { callId: call._id });
+            io.to(receiverSocketId).emit('call:missed', { callId: call._id });
+          }
+        }, 30000);
+
+      } catch (error) {
+        console.error('Error initiating call:', error);
+        socket.emit('call:error', { message: error.message });
+      }
+    });
+
+    // Accept incoming call
+    socket.on('call:accept', async (data) => {
+      try {
+        const { callId } = data;
+
+        const activeCall = activeCalls.get(callId);
+        if (!activeCall) {
+          socket.emit('call:error', { message: 'Call not found or expired' });
+          return;
+        }
+
+        // Update call status
+        await Call.findByIdAndUpdate(callId, {
+          status: 'ongoing',
+          startTime: Date.now()
+        });
+        activeCall.call.status = 'ongoing';
+
+        // Get receiver info
+        const receiver = await User.findById(socket.userId).select('name email avatar');
+
+        // Notify caller that call was accepted
+        const callerSocketId = onlineUsers.get(activeCall.call.caller.toString());
+        if (callerSocketId) {
+          io.to(callerSocketId).emit('call:accepted', {
+            callId,
+            receiver: {
+              id: socket.userId,
+              name: receiver.name,
+              email: receiver.email,
+              avatar: receiver.avatar
+            }
+          });
+        }
+
+        socket.emit('call:started', { callId });
+
+      } catch (error) {
+        console.error('Error accepting call:', error);
+        socket.emit('call:error', { message: error.message });
+      }
+    });
+
+    // Reject incoming call
+    socket.on('call:reject', async (data) => {
+      try {
+        const { callId } = data;
+
+        const activeCall = activeCalls.get(callId);
+        if (!activeCall) return;
+
+        // Update call status
+        await Call.findByIdAndUpdate(callId, {
+          status: 'rejected',
+          endReason: 'rejected',
+          endTime: Date.now()
+        });
+
+        // Notify caller
+        const callerSocketId = onlineUsers.get(activeCall.call.caller.toString());
+        if (callerSocketId) {
+          io.to(callerSocketId).emit('call:rejected', { callId });
+        }
+
+        activeCalls.delete(callId);
+
+      } catch (error) {
+        console.error('Error rejecting call:', error);
+        socket.emit('call:error', { message: error.message });
+      }
+    });
+
+    // End call
+    socket.on('call:end', async (data) => {
+      try {
+        const { callId } = data;
+
+        const activeCall = activeCalls.get(callId);
+        if (!activeCall) return;
+
+        // Update call status
+        await Call.findByIdAndUpdate(callId, {
+          status: 'ended',
+          endReason: 'completed',
+          endTime: Date.now(),
+          endedBy: socket.userId
+        });
+
+        // Notify the other participant
+        const otherUserId = activeCall.participants.find(id => id !== socket.userId);
+        const otherSocketId = onlineUsers.get(otherUserId);
+        if (otherSocketId) {
+          io.to(otherSocketId).emit('call:ended', { callId, endedBy: socket.userId });
+        }
+
+        activeCalls.delete(callId);
+
+      } catch (error) {
+        console.error('Error ending call:', error);
+        socket.emit('call:error', { message: error.message });
+      }
+    });
+
+    // Cancel outgoing call (before it's answered)
+    socket.on('call:cancel', async (data) => {
+      try {
+        const { callId } = data;
+
+        const activeCall = activeCalls.get(callId);
+        if (!activeCall) return;
+
+        // Update call status
+        await Call.findByIdAndUpdate(callId, {
+          status: 'ended',
+          endReason: 'cancelled',
+          endTime: Date.now()
+        });
+
+        // Notify receiver
+        const receiverSocketId = onlineUsers.get(activeCall.call.receiver.toString());
+        if (receiverSocketId) {
+          io.to(receiverSocketId).emit('call:cancelled', { callId });
+        }
+
+        activeCalls.delete(callId);
+
+      } catch (error) {
+        console.error('Error cancelling call:', error);
+        socket.emit('call:error', { message: error.message });
+      }
+    });
+
+    // WebRTC Signaling: Send offer
+    socket.on('webrtc:offer', (data) => {
+      const { callId, offer, receiverId } = data;
+      const receiverSocketId = onlineUsers.get(receiverId);
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit('webrtc:offer', {
+          callId,
+          offer,
+          callerId: socket.userId
+        });
+      }
+    });
+
+    // WebRTC Signaling: Send answer
+    socket.on('webrtc:answer', (data) => {
+      const { callId, answer, callerId } = data;
+      const callerSocketId = onlineUsers.get(callerId);
+      if (callerSocketId) {
+        io.to(callerSocketId).emit('webrtc:answer', {
+          callId,
+          answer,
+          receiverId: socket.userId
+        });
+      }
+    });
+
+    // WebRTC Signaling: ICE candidate
+    socket.on('webrtc:ice-candidate', (data) => {
+      const { callId, candidate, targetId } = data;
+      const targetSocketId = onlineUsers.get(targetId);
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('webrtc:ice-candidate', {
+          callId,
+          candidate,
+          senderId: socket.userId
+        });
+      }
+    });
+
+    // Toggle media (mute/unmute, camera on/off)
+    socket.on('call:media-toggle', (data) => {
+      const { callId, mediaType, enabled } = data; // mediaType: 'audio' or 'video'
+
+      const activeCall = activeCalls.get(callId);
+      if (!activeCall) return;
+
+      const otherUserId = activeCall.participants.find(id => id !== socket.userId);
+      const otherSocketId = onlineUsers.get(otherUserId);
+      if (otherSocketId) {
+        io.to(otherSocketId).emit('call:media-toggled', {
+          callId,
+          mediaType,
+          enabled,
+          userId: socket.userId
+        });
+      }
+    });
+
     // Handle user disconnect
     socket.on('disconnect', () => {
       console.log(`❌ User disconnected: ${socket.userEmail}`);
-      
+
+      // End any active calls for this user
+      for (const [callId, callData] of activeCalls) {
+        if (callData.participants.includes(socket.userId)) {
+          // Notify other participant
+          const otherUserId = callData.participants.find(id => id !== socket.userId);
+          const otherSocketId = onlineUsers.get(otherUserId);
+          if (otherSocketId) {
+            io.to(otherSocketId).emit('call:ended', {
+              callId,
+              endedBy: socket.userId,
+              reason: 'disconnected'
+            });
+          }
+
+          // Update call record
+          Call.findByIdAndUpdate(callId, {
+            status: 'ended',
+            endReason: 'failed',
+            endTime: Date.now()
+          }).exec();
+
+          activeCalls.delete(callId);
+        }
+      }
+
       // Remove from online users
       onlineUsers.delete(socket.userId);
 

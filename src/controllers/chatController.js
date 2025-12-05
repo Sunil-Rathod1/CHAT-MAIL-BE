@@ -5,7 +5,7 @@ const User = require('../models/User');
 exports.sendMessage = async (req, res) => {
   try {
     const { receiverId, content, type, replyTo } = req.body;
-    
+
     const receiver = await User.findById(receiverId);
     if (!receiver) {
       return res.status(404).json({
@@ -51,20 +51,22 @@ exports.getChatHistory = async (req, res) => {
       $or: [
         { sender: req.user._id, receiver: userId, conversationType: 'direct' },
         { sender: userId, receiver: req.user._id, conversationType: 'direct' }
-      ]
+      ],
+      'deletedBy.userId': { $ne: req.user._id }
     })
-    .populate('sender', 'name email avatar')
-    .populate('receiver', 'name email avatar')
-    .populate('replyTo.sender', 'name email avatar')
-    .sort({ createdAt: -1 })
-    .limit(limit * 1)
-    .skip((page - 1) * limit);
+      .populate('sender', 'name email avatar')
+      .populate('receiver', 'name email avatar')
+      .populate('replyTo.sender', 'name email avatar')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
 
     const totalMessages = await Message.countDocuments({
       $or: [
         { sender: req.user._id, receiver: userId, conversationType: 'direct' },
         { sender: userId, receiver: req.user._id, conversationType: 'direct' }
-      ]
+      ],
+      'deletedBy.userId': { $ne: req.user._id }
     });
 
     res.json({
@@ -90,31 +92,32 @@ exports.getChatHistory = async (req, res) => {
 exports.getConversations = async (req, res) => {
   try {
     console.log('Getting conversations for user:', req.user._id);
-    
+
     // First, find all unique users the current user has chatted with
     const messages = await Message.find({
       $or: [
         { sender: req.user._id, conversationType: 'direct' },
         { receiver: req.user._id, conversationType: 'direct' }
-      ]
+      ],
+      'deletedBy.userId': { $ne: req.user._id }
     })
-    .sort({ createdAt: -1 })
-    .populate('sender', 'name email avatar status')
-    .populate('receiver', 'name email avatar status')
-    .populate('replyTo.sender', 'name email avatar')
-    .limit(100);
+      .sort({ createdAt: -1 })
+      .populate('sender', 'name email avatar status')
+      .populate('receiver', 'name email avatar status')
+      .populate('replyTo.sender', 'name email avatar')
+      .limit(100);
 
     console.log('Found messages:', messages.length);
 
     // Group by conversation partner
     const conversationMap = new Map();
-    
+
     messages.forEach(message => {
       // Determine the other user (conversation partner)
-      const otherUserId = message.sender._id.toString() === req.user._id.toString() 
+      const otherUserId = message.sender._id.toString() === req.user._id.toString()
         ? message.receiver._id.toString()
         : message.sender._id.toString();
-      
+
       // Only keep the most recent message per conversation
       if (!conversationMap.has(otherUserId)) {
         conversationMap.set(otherUserId, {
@@ -176,7 +179,7 @@ exports.uploadImage = async (req, res) => {
   try {
     // Image processing is done by middleware
     // req.uploadedImage contains the URLs and metadata
-    
+
     if (!req.uploadedImage) {
       return res.status(400).json({
         success: false,
