@@ -641,13 +641,19 @@ module.exports = (io) => {
       try {
         const { receiverId, callType } = data; // callType: 'audio' or 'video'
         
+        console.log('📞 Call initiate request:', { callerId: socket.userId, receiverId, callType });
+        console.log('📋 Online users:', Array.from(onlineUsers.entries()));
+        
         const receiverSocketId = onlineUsers.get(receiverId);
         
         // Check if receiver is online
         if (!receiverSocketId) {
+          console.log('❌ Receiver not found in online users');
           socket.emit('call:error', { message: 'User is offline' });
           return;
         }
+
+        console.log('✅ Receiver socket found:', receiverSocketId);
 
         // Check if receiver is already in a call
         for (const [callId, callData] of activeCalls) {
@@ -668,6 +674,8 @@ module.exports = (io) => {
           status: 'ringing'
         });
 
+        console.log('📝 Call record created:', call._id);
+
         // Store active call
         activeCalls.set(call._id.toString(), {
           call,
@@ -675,6 +683,7 @@ module.exports = (io) => {
         });
 
         // Notify receiver of incoming call
+        console.log('📤 Sending call:incoming to receiver:', receiverSocketId);
         io.to(receiverSocketId).emit('call:incoming', {
           callId: call._id,
           caller: {
@@ -691,6 +700,8 @@ module.exports = (io) => {
           callId: call._id,
           receiverId
         });
+
+        console.log('✅ Call initiated successfully');
 
         // Set timeout for missed call (30 seconds)
         setTimeout(async () => {
