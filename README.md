@@ -14,11 +14,25 @@ npm install
 cp .env.example .env
 ```
 
-3. Update `.env` with your configuration
+3. Update `.env` with your configuration:
+   - Set `MONGODB_URI` to your MongoDB connection string
+   - Set `JWT_SECRET` to a secure random string
+   - Set `CORS_ORIGIN` to your frontend URL
+   - **Configure Cloudinary** for image uploads (see below)
 
-4. Start MongoDB locally or use MongoDB Atlas
+4. Configure Cloudinary (Required for Image Uploads):
+   - Sign up for a free account at [cloudinary.com](https://cloudinary.com)
+   - Get your credentials from the Cloudinary Dashboard
+   - Add to your `.env` file:
+     ```
+     CLOUDINARY_CLOUD_NAME=your_cloud_name
+     CLOUDINARY_API_KEY=your_api_key
+     CLOUDINARY_API_SECRET=your_api_secret
+     ```
 
-5. Run the server:
+5. Start MongoDB locally or use MongoDB Atlas
+
+6. Run the server:
 ```bash
 npm run dev
 ```
@@ -42,6 +56,7 @@ npm run dev
 - GET `/api/chat/history/:userId` - Get chat history
 - GET `/api/chat/conversations` - Get recent conversations
 - PUT `/api/chat/read` - Mark messages as read
+- POST `/api/chat/upload/image` - Upload image (multipart/form-data with 'image' field)
 
 ## Socket.IO Events
 

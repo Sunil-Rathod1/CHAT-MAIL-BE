@@ -100,6 +100,12 @@ const processAndUploadImage = async (req, res, next) => {
     next();
   } catch (error) {
     console.error('Error processing image:', error);
+    console.error('Error stack:', error.stack);
+    console.error('Cloudinary config status:', {
+      hasCloudName: !!process.env.CLOUDINARY_CLOUD_NAME,
+      hasApiKey: !!process.env.CLOUDINARY_API_KEY,
+      hasApiSecret: !!process.env.CLOUDINARY_API_SECRET
+    });
     res.status(500).json({
       success: false,
       message: 'Error uploading image',
