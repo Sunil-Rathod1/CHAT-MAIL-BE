@@ -38,6 +38,7 @@ module.exports = (io) => {
 
     // Add user to online users
     onlineUsers.set(socket.userId, socket.id);
+    console.log(`👥 Total online users: ${onlineUsers.size}`);
 
     // Update user status to online
     User.findByIdAndUpdate(socket.userId, {
@@ -46,9 +47,12 @@ module.exports = (io) => {
     }).exec();
 
     // Send current online users list to the newly connected user
-    socket.emit('users:online', { userIds: Array.from(onlineUsers.keys()) });
+    const onlineUsersList = Array.from(onlineUsers.keys());
+    console.log(`📤 Sending online users list to ${socket.userEmail}:`, onlineUsersList);
+    socket.emit('users:online', { userIds: onlineUsersList });
 
-    // Broadcast user online status to others
+    // Broadcast user online status to ALL other users
+    console.log(`📡 Broadcasting ${socket.userId} is online to all users`);
     socket.broadcast.emit('user:online', { userId: socket.userId });
 
     // Join user's personal room
@@ -916,6 +920,13 @@ module.exports = (io) => {
       }
     });
 
+    // Handle request for online users list
+    socket.on('request:online-users', () => {
+      const onlineUsersList = Array.from(onlineUsers.keys());
+      console.log(`📤 Sending online users list on request to ${socket.userEmail}:`, onlineUsersList);
+      socket.emit('users:online', { userIds: onlineUsersList });
+    });
+
     // Handle user disconnect
     socket.on('disconnect', () => {
       console.log(`❌ User disconnected: ${socket.userEmail}`);
@@ -947,6 +958,7 @@ module.exports = (io) => {
 
       // Remove from online users
       onlineUsers.delete(socket.userId);
+      console.log(`👥 Removed user from online list. Remaining: ${onlineUsers.size}`);
 
       // Update user status to offline
       User.findByIdAndUpdate(socket.userId, {
@@ -954,8 +966,9 @@ module.exports = (io) => {
         lastSeen: Date.now()
       }).exec();
 
-      // Broadcast user offline status
-      socket.broadcast.emit('user:offline', {
+      // Broadcast user offline status to ALL users
+      console.log(`📡 Broadcasting ${socket.userId} is offline`);
+      io.emit('user:offline', {
         userId: socket.userId,
         lastSeen: Date.now()
       });
