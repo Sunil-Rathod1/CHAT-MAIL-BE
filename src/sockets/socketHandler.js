@@ -87,6 +87,12 @@ module.exports = (io) => {
           // Update message status to delivered
           message.status = 'delivered';
           await message.save();
+          
+          // Send updated status back to sender
+          socket.emit('message:status', {
+            messageId: message._id.toString(),
+            status: 'delivered'
+          });
         }
 
         // Send confirmation to sender
@@ -147,8 +153,19 @@ module.exports = (io) => {
       try {
         const { senderId } = data;
 
+        // Find all unread messages from this sender first
+        const unreadMessages = await Message.find(
+          {
+            sender: senderId,
+            receiver: socket.userId,
+            status: { $ne: 'read' }
+          }
+        ).select('_id');
+
+        if (unreadMessages.length === 0) return;
+
         // Update all unread messages from this sender
-        const result = await Message.updateMany(
+        await Message.updateMany(
           {
             sender: senderId,
             receiver: socket.userId,
@@ -160,12 +177,21 @@ module.exports = (io) => {
           }
         );
 
-        // Notify sender about read status
+        // Notify sender about read status for each message
         const senderSocketId = onlineUsers.get(senderId);
-        if (senderSocketId && result.modifiedCount > 0) {
+        if (senderSocketId) {
+          // Send individual status updates for each message
+          unreadMessages.forEach(msg => {
+            io.to(senderSocketId).emit('message:status', {
+              messageId: msg._id.toString(),
+              status: 'read'
+            });
+          });
+          
+          // Also send bulk notification
           io.to(senderSocketId).emit('messages:read', {
             receiverId: socket.userId,
-            count: result.modifiedCount
+            count: unreadMessages.length
           });
         }
       } catch (error) {
