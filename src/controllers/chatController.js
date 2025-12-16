@@ -198,3 +198,40 @@ exports.uploadImage = async (req, res) => {
     });
   }
 };
+
+// Upload voice message
+exports.uploadVoice = async (req, res) => {
+  try {
+    if (!req.uploadedFile) {
+      return res.status(400).json({
+        success: false,
+        message: 'Voice upload failed'
+      });
+    }
+
+    // Parse duration and waveform from body
+    const duration = parseFloat(req.body.duration) || 0;
+    let waveform = [];
+    try {
+      waveform = JSON.parse(req.body.waveform || '[]');
+    } catch (e) {
+      waveform = [];
+    }
+
+    res.json({
+      success: true,
+      data: {
+        url: req.uploadedFile.url,
+        duration,
+        waveform,
+        size: req.uploadedFile.size,
+        type: 'voice'
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};

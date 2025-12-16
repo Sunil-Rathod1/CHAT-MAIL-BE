@@ -61,16 +61,24 @@ module.exports = (io) => {
     // Handle sending messages
     socket.on('message:send', async (data) => {
       try {
-        const { receiverId, content, type = 'text', replyTo } = data;
+        const { receiverId, content, type = 'text', replyTo, voiceDuration, voiceWaveform } = data;
 
         // Create message in database
-        const message = await Message.create({
+        const messageData = {
           sender: socket.userId,
           receiver: receiverId,
           content,
           type,
           replyTo
-        });
+        };
+
+        // Add voice data if present
+        if (type === 'voice') {
+          if (voiceDuration) messageData.voiceDuration = voiceDuration;
+          if (voiceWaveform) messageData.voiceWaveform = voiceWaveform;
+        }
+
+        const message = await Message.create(messageData);
 
         await message.populate('sender', 'name email avatar');
         await message.populate('receiver', 'name email avatar');

@@ -28,6 +28,7 @@ const fileFilter = (req, file, cb) => {
   const allowedTypes = [
     'image/',
     'video/',
+    'audio/',  // Voice messages support
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -209,7 +210,7 @@ const processAndUploadImage = async (req, res, next) => {
 const deleteFile = async (publicId) => {
   try {
     if (USE_LOCAL_STORAGE) {
-      const folders = ['images', 'videos', 'documents', 'thumbnails'];
+      const folders = ['images', 'videos', 'documents', 'thumbnails', 'voice'];
       for (const folder of folders) {
         const filePath = path.join(__dirname, '../../uploads', folder, publicId);
         if (fs.existsSync(filePath)) {
@@ -224,8 +225,51 @@ const deleteFile = async (publicId) => {
   }
 };
 
+// Process and upload voice message
+const processAndUploadVoice = async (req, res, next) => {
+  try {
+    console.log('🎤 Voice upload request received');
+    
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'No voice file provided'
+      });
+    }
+
+    console.log('Voice file details:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+
+    const uniqueFilename = `voice_${crypto.randomBytes(16).toString('hex')}.webm`;
+    const voiceUrl = await saveFile(req.file.buffer, 'voice', uniqueFilename);
+
+    console.log('✅ Voice upload successful:', voiceUrl);
+
+    req.uploadedFile = {
+      url: voiceUrl,
+      publicId: uniqueFilename,
+      size: req.file.size,
+      format: 'webm',
+      type: 'voice'
+    };
+
+    next();
+  } catch (error) {
+    console.error('❌ Error uploading voice:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error uploading voice message',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+};
+
 module.exports = {
   upload,
   processAndUploadImage,
+  processAndUploadVoice,
   deleteFromCloudinary: deleteFile
 };

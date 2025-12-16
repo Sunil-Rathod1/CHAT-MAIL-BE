@@ -28,7 +28,7 @@ const messageSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['text', 'image', 'file', 'voice'],
+    enum: ['text', 'image', 'video', 'file', 'voice', 'document', 'sticker'],
     default: 'text'
   },
   fileUrl: {
@@ -46,6 +46,13 @@ const messageSchema = new mongoose.Schema({
   // Image specific
   thumbnail: {
     type: String
+  },
+  // Voice message specific
+  voiceDuration: {
+    type: Number  // Duration in seconds
+  },
+  voiceWaveform: {
+    type: [Number]  // Array of amplitude values for visualization
   },
   // Message reply
   replyTo: {
