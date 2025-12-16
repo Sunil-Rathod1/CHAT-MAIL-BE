@@ -1,46 +1,30 @@
 const multer = require('multer');
 const sharp = require('sharp');
 const path = require('path');
-const fs = require('fs');
 const crypto = require('crypto');
+const fs = require('fs');
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, '../../uploads');
-const imagesDir = path.join(uploadsDir, 'images');
-const videosDir = path.join(uploadsDir, 'videos');
-const documentsDir = path.join(uploadsDir, 'documents');
-const thumbnailsDir = path.join(uploadsDir, 'thumbnails');
+// Use local storage or Cloudinary based on environment
+const USE_LOCAL_STORAGE = !process.env.CLOUDINARY_API_KEY || process.env.USE_LOCAL_STORAGE === 'true';
 
-[uploadsDir, imagesDir, videosDir, documentsDir, thumbnailsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
+console.log('📁 Storage mode:', USE_LOCAL_STORAGE ? 'LOCAL' : 'CLOUDINARY');
 
-// Configure multer for disk storage
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    let uploadPath = uploadsDir;
-    
-    if (file.mimetype.startsWith('image/')) {
-      uploadPath = imagesDir;
-    } else if (file.mimetype.startsWith('video/')) {
-      uploadPath = videosDir;
-    } else {
-      uploadPath = documentsDir;
-    }
-    
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = crypto.randomBytes(16).toString('hex');
-    const ext = path.extname(file.originalname);
-    cb(null, `${uniqueSuffix}${ext}`);
-  }
-});
+// Cloudinary setup (for production)
+let cloudinary;
+if (!USE_LOCAL_STORAGE) {
+  cloudinary = require('cloudinary').v2;
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+  });
+  console.log('☁️ Cloudinary configured:', process.env.CLOUDINARY_CLOUD_NAME);
+}
+
+// Configure multer for memory storage
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  // Accept images, videos, and documents
   const allowedTypes = [
     'image/',
     'video/',
@@ -67,19 +51,50 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB max file size for videos
+    fileSize: 50 * 1024 * 1024
   }
 });
 
-// Middleware to process and upload files locally
+// Helper function to save file locally or to Cloudinary
+const saveFile = async (buffer, folder, filename) => {
+  if (USE_LOCAL_STORAGE) {
+    const uploadDir = path.join(__dirname, '../../uploads', folder);
+    
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    const filePath = path.join(uploadDir, filename);
+    fs.writeFileSync(filePath, buffer);
+    
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    return `${baseUrl}/uploads/${folder}/${filename}`;
+  } else {
+    // Upload to Cloudinary
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: `chatmail/${folder}`,
+          public_id: filename.replace(/\.[^/.]+$/, ''),
+          resource_type: 'auto'
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result.secure_url);
+        }
+      );
+      uploadStream.end(buffer);
+    });
+  }
+};
+
 const processAndUploadImage = async (req, res, next) => {
   try {
     console.log('📤 Upload request received');
     console.log('File details:', {
       originalname: req.file?.originalname,
       mimetype: req.file?.mimetype,
-      size: req.file?.size,
-      path: req.file?.path
+      size: req.file?.size
     });
 
     if (!req.file) {
@@ -91,43 +106,48 @@ const processAndUploadImage = async (req, res, next) => {
 
     const isImage = req.file.mimetype.startsWith('image/');
     const isVideo = req.file.mimetype.startsWith('video/');
-    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-    
-    // Get relative path from uploads directory
-    const relativePath = path.relative(uploadsDir, req.file.path);
-    const fileUrl = `${baseUrl}/uploads/${relativePath.replace(/\\/g, '/')}`;
+    const uniqueFilename = `${crypto.randomBytes(16).toString('hex')}${path.extname(req.file.originalname)}`;
 
     console.log(`File type: ${isImage ? 'Image' : isVideo ? 'Video' : 'Document'}`);
 
-    // For images: create thumbnail
     if (isImage) {
       try {
-        console.log('🖼️ Creating thumbnail with Sharp...');
+        console.log('🖼️ Processing image with Sharp...');
         
-        const thumbnailName = `thumb_${req.file.filename}`;
-        const thumbnailPath = path.join(thumbnailsDir, thumbnailName);
-        
-        // Generate thumbnail
-        const metadata = await sharp(req.file.path)
-          .resize(300, 300, { 
-            fit: 'cover' 
-          })
+        const compressedBuffer = await sharp(req.file.buffer)
+          .resize(1920, 1080, { fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+
+        console.log('✅ Image compressed');
+
+        const thumbnailBuffer = await sharp(req.file.buffer)
+          .resize(300, 300, { fit: 'cover' })
           .jpeg({ quality: 70 })
-          .toFile(thumbnailPath);
+          .toBuffer();
 
         console.log('✅ Thumbnail created');
+        console.log('💾 Saving files...');
+        
+        const thumbnailFilename = `thumb_${uniqueFilename}`;
+        
+        const [imageUrl, thumbnailUrl] = await Promise.all([
+          saveFile(compressedBuffer, 'images', uniqueFilename),
+          saveFile(thumbnailBuffer, 'thumbnails', thumbnailFilename)
+        ]);
 
-        const imageMetadata = await sharp(req.file.path).metadata();
-        const thumbnailUrl = `${baseUrl}/uploads/thumbnails/${thumbnailName}`;
+        console.log('✅ Upload successful:', imageUrl);
+
+        const imageMetadata = await sharp(compressedBuffer).metadata();
 
         req.uploadedImage = {
-          url: fileUrl,
-          publicId: req.file.filename,
+          url: imageUrl,
+          publicId: uniqueFilename,
           thumbnail: thumbnailUrl,
-          thumbnailPublicId: thumbnailName,
+          thumbnailPublicId: thumbnailFilename,
           width: imageMetadata.width,
           height: imageMetadata.height,
-          size: req.file.size,
+          size: compressedBuffer.length,
           format: imageMetadata.format,
           type: 'image'
         };
@@ -135,33 +155,36 @@ const processAndUploadImage = async (req, res, next) => {
         console.log('✅ Image processed successfully');
       } catch (sharpError) {
         console.error('⚠️ Sharp processing failed:', sharpError.message);
-        // If Sharp fails, use original as thumbnail
+        const imageUrl = await saveFile(req.file.buffer, 'images', uniqueFilename);
+        
         req.uploadedImage = {
-          url: fileUrl,
-          publicId: req.file.filename,
-          thumbnail: fileUrl,
-          thumbnailPublicId: req.file.filename,
+          url: imageUrl,
+          publicId: uniqueFilename,
+          thumbnail: imageUrl,
+          thumbnailPublicId: uniqueFilename,
           width: null,
           height: null,
           size: req.file.size,
-          format: path.extname(req.file.filename).slice(1),
+          format: path.extname(req.file.originalname).slice(1),
           type: 'image'
         };
       }
-    } 
-    // For videos and documents: no processing needed
-    else {
-      console.log('📁 File saved successfully');
+    } else {
+      console.log('📁 Saving file...');
+      const folder = isVideo ? 'videos' : 'documents';
+      const fileUrl = await saveFile(req.file.buffer, folder, uniqueFilename);
+
+      console.log('✅ Upload successful:', fileUrl);
 
       req.uploadedImage = {
         url: fileUrl,
-        publicId: req.file.filename,
+        publicId: uniqueFilename,
         thumbnail: null,
         thumbnailPublicId: null,
         width: null,
         height: null,
         size: req.file.size,
-        format: path.extname(req.file.filename).slice(1),
+        format: path.extname(req.file.originalname).slice(1),
         type: isVideo ? 'video' : 'document',
         fileName: req.file.originalname
       };
@@ -174,7 +197,6 @@ const processAndUploadImage = async (req, res, next) => {
     console.error('❌ Error processing file:', error.message);
     console.error('Error stack:', error.stack);
     
-    // Send detailed error to client in development
     res.status(500).json({
       success: false,
       message: 'Error uploading file',
@@ -184,17 +206,26 @@ const processAndUploadImage = async (req, res, next) => {
   }
 };
 
-// Delete image from Cloudinary
-const deleteFromCloudinary = async (publicId) => {
+const deleteFile = async (publicId) => {
   try {
-    await cloudinary.uploader.destroy(publicId);
+    if (USE_LOCAL_STORAGE) {
+      const folders = ['images', 'videos', 'documents', 'thumbnails'];
+      for (const folder of folders) {
+        const filePath = path.join(__dirname, '../../uploads', folder, publicId);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      }
+    } else if (cloudinary) {
+      await cloudinary.uploader.destroy(publicId);
+    }
   } catch (error) {
-    console.error('Error deleting from Cloudinary:', error);
+    console.error('Error deleting file:', error);
   }
 };
 
 module.exports = {
   upload,
   processAndUploadImage,
-  deleteFromCloudinary
+  deleteFromCloudinary: deleteFile
 };
